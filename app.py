@@ -1,14 +1,20 @@
 from flask import Flask, request, render_template, redirect, url_for, flash, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-import os, smtplib, webbrowser
+import os, smtplib
 
 # === Flask App Config ===
 app = Flask(__name__)
-app.secret_key = 'Hello'
+app.secret_key = os.environ.get('SECRET_KEY', 'Hello')
 
 # === Database Config ===
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL', 'postgresql://trackmycredits_user:8TDV2bRp6oXjYao7aWr1AiyNPJdS4p71@dpg-d46fgcchg0os738saom0-a/trackmycredits')
+database_url = os.environ.get('DATABASE_URL')
+
+# Railway gives "postgres://" — SQLAlchemy needs "postgresql://"
+if database_url and database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url or 'sqlite:///TrackMyCredits.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -47,12 +53,11 @@ with app.app_context():
 # === Helper: Email ===
 def send_email(recipient):
     sender = "trackmycredits.devteam@gmail.com"
-    password = "hpsm vznm npno waat"  # (add if needed for real email)
-    subject = f"Welcome to Track My Credits – Registration Successful!"
-    message = (f"Hello {recipient},\n\n"
-               f"Thank you for registering with Track My Credits.\n"
-               f"You can now log in and track your academic credits.\n")
+    password = "hpsm vznm npno waat"  # (App Password - only if sending real emails)
+    subject = "Welcome to Track My Credits – Registration Successful!"
+    message = f"Hello {recipient},\n\nThank you for registering with Track My Credits.\nYou can now log in and track your academic credits.\n"
     email_message = f"Subject: {subject}\n\n{message}"
+
     try:
         with smtplib.SMTP("smtp.gmail.com", 587) as server:
             server.starttls()
@@ -62,7 +67,7 @@ def send_email(recipient):
     except Exception as e:
         print(f"❌ Email error: {e}")
 
-# === 8 Credit Categories ===
+# === Credit Categories ===
 CATEGORIES = [
     {"code": "ec", "title": "Experiential Core", "description": "Hands-on learning bridging theory and practice.", "total": 16},
     {"code": "ee", "title": "Experiential Electives", "description": "Tailored experiential opportunities.", "total": 8},
@@ -105,7 +110,6 @@ def login():
     if request.method == 'POST':
         username = request.form.get('email')
         password = request.form.get('password')
-
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password, password):
             session['user'] = username
@@ -212,5 +216,4 @@ def delete_course():
 
 # === MAIN APP ENTRY ===
 if __name__ == '__main__':
-    webbrowser.open("http://127.0.0.1:5000/")
-    app.run(debug=True)
+    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
