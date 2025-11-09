@@ -1,7 +1,7 @@
 from flask import Flask, request, render_template, redirect, url_for, flash, session, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-import os, smtplib
+import os, smtplib, webbrowser
 
 # === Flask App Config ===
 app = Flask(__name__)
@@ -10,10 +10,11 @@ app.secret_key = os.environ.get('SECRET_KEY', 'Hello')
 # === Database Config ===
 database_url = os.environ.get('DATABASE_URL')
 
-# Railway gives "postgres://" — SQLAlchemy needs "postgresql://"
+# Render / Railway fixes postgres:// → postgresql://
 if database_url and database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
+# Use Postgres (preferred) or fallback only if missing
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url or 'sqlite:///TrackMyCredits.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -21,13 +22,13 @@ db = SQLAlchemy(app)
 
 # === MODELS ===
 class User(db.Model):
-    __tablename__ = 'users'
+    _tablename_ = 'users'
     username = db.Column(db.String(120), primary_key=True)
     password = db.Column(db.String(255), nullable=False)
     courses = db.relationship('Course', backref='user', lazy=True)
 
 class Course(db.Model):
-    __tablename__ = 'courses'
+    _tablename_ = 'courses'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     username = db.Column(db.String(120), db.ForeignKey('users.username'), nullable=False)
     category = db.Column(db.String(50))
@@ -36,7 +37,7 @@ class Course(db.Model):
     grade = db.Column(db.String(10))
 
 class ContactMessage(db.Model):
-    __tablename__ = 'contact_messages'
+    _tablename_ = 'contact_messages'
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     name = db.Column(db.String(100))
     batch = db.Column(db.String(50))
@@ -46,14 +47,10 @@ class ContactMessage(db.Model):
     feedback = db.Column(db.Text)
     submitted_at = db.Column(db.DateTime, server_default=db.func.now())
 
-# === Initialize DB ===
-with app.app_context():
-    db.create_all()
-
-# === Helper: Email ===
+# === EMAIL SENDER ===
 def send_email(recipient):
     sender = "trackmycredits.devteam@gmail.com"
-    password = "hpsm vznm npno waat"  # (App Password - only if sending real emails)
+    password = "hpsm vznm npno waat"  # App Password
     subject = "Welcome to Track My Credits – Registration Successful!"
     message = f"Hello {recipient},\n\nThank you for registering with Track My Credits.\nYou can now log in and track your academic credits.\n"
     email_message = f"Subject: {subject}\n\n{message}"
@@ -69,24 +66,20 @@ def send_email(recipient):
 
 # === Credit Categories ===
 CATEGORIES = [
-    {"code": "ec", "title": "Experiential Core", "description": "Hands-on learning bridging theory and practice.", "total": 16},
-    {"code": "ee", "title": "Experiential Electives", "description": "Tailored experiential opportunities.", "total": 8},
-    {"code": "fc", "title": "Foundation Core", "description": "Essential foundational knowledge.", "total": 44},
-    {"code": "ho", "title": "Honours", "description": "Advanced academic work for high achievers.", "total": 20},
-    {"code": "mi", "title": "Minors", "description": "Concentrated study in another field.", "total": 20},
-    {"code": "pc", "title": "Program Core", "description": "Core courses specific to your major.", "total": 52},
-    {"code": "pe", "title": "Program Electives", "description": "Specialized courses within your major.", "total": 24},
-    {"code": "ue", "title": "University Electives", "description": "Free elective courses from any department.", "total": 16}
+    {"code": "ec", "title": "Experiential Core", "total": 16},
+    {"code": "ee", "title": "Experiential Electives", "total": 8},
+    {"code": "fc", "title": "Foundation Core", "total": 44},
+    {"code": "ho", "title": "Honours", "total": 20},
+    {"code": "mi", "title": "Minors", "total": 20},
+    {"code": "pc", "title": "Program Core", "total": 52},
+    {"code": "pe", "title": "Program Electives", "total": 24},
+    {"code": "ue", "title": "University Electives", "total": 16},
 ]
 
 # === ROUTES ===
 @app.route('/')
 def Home():
     return render_template('index.html')
-
-@app.route('/about')
-def about():
-    return render_template('about.html')
 
 @app.route('/contact', methods=['GET', 'POST'])
 def contact():
@@ -110,6 +103,7 @@ def login():
     if request.method == 'POST':
         username = request.form.get('email')
         password = request.form.get('password')
+
         user = User.query.filter_by(username=username).first()
         if user and check_password_hash(user.password, password):
             session['user'] = username
@@ -123,14 +117,16 @@ def register():
     if request.method == 'POST':
         username = request.form.get('email')
         password = generate_password_hash(request.form.get('password'))
-        existing = User.query.filter_by(username=username).first()
-        if existing:
-            flash("⚠️ User already exists.")
+
+        if User.query.filter_by(username=username).first():
+            flash("⚠ User already exists.")
             return redirect(url_for('register'))
+
         new_user = User(username=username, password=password)
         db.session.add(new_user)
         db.session.commit()
         send_email(username)
+
         flash("✅ Registration successful! Please log in.")
         return redirect(url_for('login'))
     return render_template('register.html')
@@ -138,7 +134,7 @@ def register():
 @app.route('/personalized')
 def personalized():
     if 'user' not in session:
-        flash("⚠️ Please log in first.")
+        flash("⚠ Please log in first.")
         return redirect(url_for('login'))
 
     username = session['user']
@@ -146,28 +142,23 @@ def personalized():
 
     course_dict = {}
     for course in courses:
-        if course.category not in course_dict:
-            course_dict[course.category] = []
-        course_dict[course.category].append({
-            "name": course.course_name,
-            "credits": course.credits,
-            "grade": course.grade
-        })
+        course_dict.setdefault(course.category, []).append(course)
 
+    total_earned = 0
     for cat in CATEGORIES:
         code = cat['code']
-        cat['earned'] = sum([c['credits'] for c in course_dict.get(code, [])])
-        cat['remaining'] = cat['total'] - cat['earned']
-        cat['percent'] = round((cat['earned'] / cat['total']) * 100) if cat['total'] > 0 else 0
+        earned = sum(c.credits for c in course_dict.get(code, []))
+        cat['earned'] = earned
+        cat['remaining'] = cat['total'] - earned
+        cat['percent'] = round((earned / cat['total']) * 100) if cat['total'] else 0
+        total_earned += earned
 
-    total_earned = sum(c['earned'] for c in CATEGORIES)
-    total_possible = sum(c['total'] for c in CATEGORIES)
+    total_possible = sum(cat['total'] for cat in CATEGORIES)
     percent_complete = round((total_earned / total_possible) * 100)
 
     return render_template('personalized.html',
                            username=username,
                            categories=CATEGORIES,
-                           course_dict=course_dict,
                            total_credits_earned=total_earned,
                            total_credits_remaining=total_possible - total_earned,
                            percentage_complete=percent_complete)
@@ -180,7 +171,7 @@ def logout():
 @app.route('/add_course', methods=['POST'])
 def add_course():
     if 'user' not in session:
-        flash("⚠️ Please log in first.")
+        flash("⚠ Please log in first.")
         return redirect(url_for('login'))
 
     new_course = Course(
@@ -206,13 +197,19 @@ def delete_course():
         course_name=data.get('course_name')
     ).first()
 
-    if course:
-        db.session.delete(course)
-        db.session.commit()
-        return jsonify({"success": True})
-    else:
+    if not course:
         return jsonify({"success": False, "error": "Course not found"})
 
-# === MAIN APP ENTRY ===
+    db.session.delete(course)
+    db.session.commit()
+    return jsonify({"success": True})
+# === TEMPORARY INITIALIZER (Use Once, Then Delete) ===
+@app.route('/initdb')
+def initdb():
+    with app.app_context():
+        db.create_all()
+    return "✅ Database tables created successfully!"
+
+# === MAIN APP ENTRY FOR RENDER ===
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
+    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
